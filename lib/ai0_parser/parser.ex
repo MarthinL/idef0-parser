@@ -61,6 +61,17 @@ defmodule Ai0Parser.Parser do
     objects = if Map.has_key?(data, "Object in ABC List"), do: flatten_list_wrapper(Map.get(data, "Object in ABC List")), else: []
     lists = Map.put(lists, "Objects in ABC", objects)
 
+    # Compute IDEF0 numbering
+    numbering = compute_numbering(lists)
+
+    # Add numbering as custom assignments
+    assignments = lists["Assignments"] || []
+    new_assignments = assignments ++ [
+      %{"Name" => "A-Numbers by Activity ID", "Type" => "Custom", "Activity" => numbering["Activity Numbers"]},
+      %{"Name" => "ICOM Numbers by Diagram ID and Concept ID", "Type" => "Custom", "Diagram-Concept" => numbering["Concept Numbers"]}
+    ]
+    lists = Map.put(lists, "Assignments", new_assignments)
+
     # Build final structure
     %{
       "Source" => %{
@@ -89,6 +100,69 @@ defmodule Ai0Parser.Parser do
     list_data
   end
   defp flatten_list_wrapper(data), do: [data]
+
+  defp compute_numbering(lists) do
+    diagrams = lists["Diagrams"] || []
+    {activity_numbers, concept_numbers} = compute_numbering_recursive(diagrams, %{}, %{})
+    %{
+      "Activity Numbers" => activity_numbers,
+      "Concept Numbers" => concept_numbers
+    }
+  end
+
+  defp compute_numbering_recursive(diagrams, activity_numbers, concept_numbers) do
+    Enum.reduce(diagrams, {activity_numbers, concept_numbers}, fn diagram, {act_nums, conc_nums} ->
+      if diagram["Parent"] == "None" do
+        # Context diagram
+        [activity | _] = diagram["Activity List"]
+        activity_id = activity["ID"]
+        new_act_nums = Map.put(act_nums, activity_id, "A0")
+        {new_act_nums, conc_nums}
+      else
+        # Decomposition diagram
+        parent_activity_id = diagram["Parent"]["Activity"]
+        parent_diagram_id = diagram["Parent"]["Diagram"]
+        parent_a_number = act_nums[parent_activity_id]
+
+        # Assign A numbers to activities in this diagram
+        new_act_nums = Enum.reduce(Enum.with_index(diagram["Activity List"], 1), act_nums, fn {activity, index}, acc ->
+          a_number = if parent_a_number == "A0", do: "A" <> to_string(index), else: parent_a_number <> to_string(index)
+          Map.put(acc, activity["ID"], a_number)
+        end)
+
+        # Find parent diagram and activity
+        parent_diagram = find_diagram_by_id(diagrams, parent_diagram_id)
+        parent_activity = find_activity_by_id(parent_diagram["Activity List"], parent_activity_id)
+
+        # Assign concept numbers for boundary arrows
+        concept_nums_for_diagram = %{}
+        icom_lists = [
+          {"Input List", "I"},
+          {"Control List", "C"},
+          {"Output List", "O"},
+          {"Mechanism List", "M"}
+        ]
+        concept_nums_for_diagram = Enum.reduce(icom_lists, concept_nums_for_diagram, fn {list_name, prefix}, acc ->
+          list = parent_activity[list_name] || []
+          Enum.reduce(Enum.with_index(list, 1), acc, fn {concept, index}, acc2 ->
+            number = prefix <> to_string(index)
+            Map.put(acc2, concept["ID"], number)
+          end)
+        end)
+
+        new_conc_nums = Map.put(conc_nums, diagram["ID"], concept_nums_for_diagram)
+        {new_act_nums, new_conc_nums}
+      end
+    end)
+  end
+
+  defp find_diagram_by_id(diagrams, id) do
+    Enum.find(diagrams, fn d -> d["ID"] == id end)
+  end
+
+  defp find_activity_by_id(activities, id) do
+    Enum.find(activities, fn a -> a["ID"] == id end)
+  end
 
   defp parse_lines(lines, i, acc) do
     len = length(lines)

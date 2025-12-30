@@ -16,7 +16,7 @@ erl_crash.dump
 .DS_Store
 
 # Build outputs
-ai0_parser
+/ai0_parser
 *.app
 ebin/
 

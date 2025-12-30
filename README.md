@@ -19,6 +19,7 @@ IDEF0, despite being deprecated as a federal standard, remains genuinely useful 
 
 ### Current Capabilities
 - **Complete AI0 parsing**: All IDEF0 elements (activities, concepts, diagrams, ICOM lists, hierarchies)
+- **IDEF0 numbering**: Automatic computation of A-numbers for activities and I/C/O/M numbers for boundary concepts on decomposition diagrams
 - **Structured output**: Pools (ID-keyed maps) and Lists (flat arrays) with preserved ordering
 - **Flexible filtering**: 
   - `--no-abc`: Exclude ABC Data and Objects in ABC list
@@ -128,15 +129,19 @@ Source
 │   ├── Concepts
 │   ├── Costdrivers
 │   └── Notes
-└── Lists (flat arrays)
-    ├── Assignments
-    ├── Diagrams
-    └── Objects in ABC
+├── Lists (flat arrays)
+│   ├── Assignments
+│   ├── Diagrams
+│   └── Objects in ABC
+└── Numbering
+    ├── Activity Numbers (ID -> A-number)
+    └── Concept Numbers (diagram ID -> concept ID -> I/C/O/M number)
 ```
 
 ### Key Design Decisions
 - **Pools**: ID-keyed maps for quick lookup and bidirectional references
 - **Lists**: Flat arrays preserve insertion order (critical for diagram element sequencing)
+- **Numbering**: Computed IDEF0 display numbers (A-numbers, I/C/O/M numbers) added post-parsing for diagram rendering
 - **No artificial nesting**: Format is fundamentally flat; hierarchies are represented via parent/child ID references
 - **Complete field preservation**: All original fields present, including ABC Data and Property Lists (can be filtered at export)
 
