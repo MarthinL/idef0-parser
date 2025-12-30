@@ -1,0 +1,25 @@
+# Elixir
+_build/
+deps/
+*.beam
+*.plt
+erl_crash.dump
+.elixir_ls/
+.erlang.cookie
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build outputs
+ai0_parser
+*.app
+ebin/
+
+# Output files (generated from processing)
+output*.json
+IMP.json
