@@ -1,0 +1,606 @@
+defmodule Ai0Parser.Parser do
+  @moduledoc """
+  Parser for AI0 TXT files.
+  """
+
+  import NimbleParsec
+
+  # simple kv parser: `Key:  Value` -> {:kv, key, value}
+  key = ascii_string([?A..?Z, ?a..?z, ?0..?9, ?_ , ?\-, ?., ?\s, ?#], min: 1)
+  colon = string(":") |> ignore()
+  spaces = ascii_string([?\s], min: 0)
+  value = utf8_string([], min: 0)
+
+  kv =
+    key
+    |> ignore(spaces)
+    |> concat(colon)
+    |> ignore(spaces)
+    |> concat(value)
+    |> eos()
+    |> reduce({:build_kv, []})
+
+  defparsec(:kv_line, kv)
+
+  defp build_kv([key, value]) do
+    {:kv, String.trim(key), String.trim(value)}
+  end
+
+  # Public API
+  def parse(text) when is_binary(text) do
+    lines = String.split(text, ~r/\r?\n/, trim: false)
+    {result, _} = parse_lines(lines, 0, %{})
+
+    # Restructure into the final format
+    restructure_output(result)
+  end
+
+  defp restructure_output(data) do
+    # Extract header (it's already parsed by parse_ai0_header)
+    header = Map.get(data, "AI0 Neutral Text;  Version", %{})
+
+    # Separate pools from lists
+    pools = %{}
+    pools = if Map.has_key?(data, "Activity Pool"), do: Map.put(pools, "Activities", Map.get(data, "Activity Pool")), else: pools
+    pools = if Map.has_key?(data, "Concept Pool"), do: Map.put(pools, "Concepts", Map.get(data, "Concept Pool")), else: pools
+    pools = if Map.has_key?(data, "Costdriver Pool"), do: Map.put(pools, "Costdrivers", Map.get(data, "Costdriver Pool")), else: pools
+    pools = if Map.has_key?(data, "Note Pool"), do: Map.put(pools, "Notes", Map.get(data, "Note Pool")), else: pools
+
+    # Separate lists with flattening
+    lists = %{}
+
+    # Flatten Assignments (if it has intermediate wrapper)
+    assignments = if Map.has_key?(data, "Assignment List"), do: flatten_list_wrapper(Map.get(data, "Assignment List")), else: []
+    lists = if length(assignments) > 0, do: Map.put(lists, "Assignments", assignments), else: lists
+
+    # Flatten Diagrams (remove "Diagram" wrapper if present)
+    diagrams = if Map.has_key?(data, "Diagram List"), do: flatten_diagram_list(Map.get(data, "Diagram List")), else: []
+    lists = if length(diagrams) > 0, do: Map.put(lists, "Diagrams", diagrams), else: lists
+
+    # Flatten Objects in ABC (if it has intermediate wrapper) - always include as a list
+    objects = if Map.has_key?(data, "Object in ABC List"), do: flatten_list_wrapper(Map.get(data, "Object in ABC List")), else: []
+    lists = Map.put(lists, "Objects in ABC", objects)
+
+    # Build final structure
+    %{
+      "Source" => %{
+        "Header" => header,
+        "Pools" => pools,
+        "Lists" => lists
+      }
+    }
+  end
+
+  defp flatten_diagram_list(list_data) when is_list(list_data) do
+    # Diagrams come as [{Diagram: [diagram1, diagram2, ...]}]
+    # We want [diagram1, diagram2, ...]
+    Enum.flat_map(list_data, fn item ->
+      case item do
+        %{"Diagram" => diagrams} when is_list(diagrams) -> diagrams
+        %{"Diagram" => diagram} -> [diagram]
+        _ -> [item]
+      end
+    end)
+  end
+  defp flatten_diagram_list(data), do: [data]
+
+  defp flatten_list_wrapper(list_data) when is_list(list_data) do
+    # Generic list flattening - just return as is
+    list_data
+  end
+  defp flatten_list_wrapper(data), do: [data]
+
+  defp parse_lines(lines, i, acc) do
+    len = length(lines)
+    if i >= len do
+      {acc, i}
+    else
+      line = Enum.at(lines, i) |> String.replace("\t", " ") |> String.trim()
+
+      cond do
+        line == "" -> parse_lines(lines, i + 1, acc)
+        String.starts_with?(line, "/*") -> parse_lines(lines, i + 1, acc)
+        String.starts_with?(line, "End") -> {acc, i + 1}
+
+        # Header line: "AI0 Neutral Text;  Version:2.20;  12/25/2025  02:30.36"
+        String.starts_with?(line, "AI0 Neutral Text") ->
+          header_data = parse_ai0_header(line)
+          acc2 = Map.put(acc, "AI0 Neutral Text;  Version", header_data)
+          parse_lines(lines, i + 1, acc2)
+
+        # Parent: special handling
+        String.starts_with?(line, "Parent:") ->
+          val = String.trim_leading(line, "Parent:") |> String.trim()
+          parent_obj = parse_parent_value(val)
+          acc2 = Map.put(acc, "Parent", parent_obj)
+          parse_lines(lines, i + 1, acc2)
+
+        # ICOM Lists (Input, Output, Control, Mechanism) - flatten to single list
+        line in ["Input List", "Output List", "Control List", "Mechanism List"] ->
+          header = line
+          end_idx = find_end_index(lines, i + 1, header)
+          if end_idx == nil do
+             acc2 = Map.put(acc, header, [])
+             parse_lines(lines, i + 1, acc2)
+          else
+             body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+             parsed_items = parse_icom_items(body)
+             acc2 = Map.put(acc, header, parsed_items)
+             parse_lines(lines, end_idx + 1, acc2)
+          end
+
+        # Concept List and Concept
+        line in ["Concept List", "Concept"] ->
+          header = line
+          end_idx = find_end_index(lines, i + 1, header)
+          if end_idx == nil do
+             acc2 = put_block(acc, header, [])
+             parse_lines(lines, i + 1, acc2)
+          else
+             body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+             parsed_items = parse_icom_items(body)
+             acc2 = put_block(acc, header, parsed_items)
+             parse_lines(lines, end_idx + 1, acc2)
+          end
+
+        # Assignment List - special handling to parse assignments
+        line == "Assignment List" ->
+          header = line
+          end_idx = find_end_index(lines, i + 1, header)
+          if end_idx == nil do
+             acc2 = Map.put(acc, header, [])
+             parse_lines(lines, i + 1, acc2)
+          else
+             body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+             parsed_assignments = parse_assignment_items(body)
+             acc2 = Map.put(acc, header, parsed_assignments)
+             parse_lines(lines, end_idx + 1, acc2)
+          end
+
+        # Activity List - special handling to flatten "Activity" key
+        line == "Activity List" ->
+          header = line
+          end_idx = find_end_index(lines, i + 1, header)
+          if end_idx == nil do
+             acc2 = Map.put(acc, header, [])
+             parse_lines(lines, i + 1, acc2)
+          else
+             body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+             {parsed_map, _} = parse_lines(body, 0, %{})
+
+             # Extract "Activity" list and flatten it directly into Activity List
+             activities = Map.get(parsed_map, "Activity", [])
+             activities = if is_list(activities), do: activities, else: [activities]
+
+             acc2 = Map.put(acc, header, activities)
+             parse_lines(lines, end_idx + 1, acc2)
+          end
+
+        # Flatten Lists: Breakdown, Property, Source, Note
+        line in ["Breakdown List", "Property List", "Source List", "Note List"] ->
+          header = line
+          end_idx = find_end_index(lines, i + 1, header)
+          if end_idx == nil do
+             acc2 = Map.put(acc, header, [])
+             parse_lines(lines, i + 1, acc2)
+          else
+             body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+             {parsed_map, _} = parse_lines(body, 0, %{})
+
+             # Determine inner key
+             inner_key = case header do
+               "Breakdown List" -> "Breakdown"
+               "Property List" -> "Property"
+               "Source List" -> "Source" # Assuming Source
+               "Note List" -> "Note"
+               _ -> String.replace(header, " List", "")
+             end
+
+             items = Map.get(parsed_map, inner_key, [])
+             # Ensure items is a list (it might be a single map if put_block logic changes, but currently it is a list)
+             items = if is_list(items), do: items, else: [items]
+
+             acc2 = Map.put(acc, header, items)
+             parse_lines(lines, end_idx + 1, acc2)
+          end
+
+        true ->
+          # Block Header with ID: "Activity 1", "Diagram: 1", "Note 1", "Activity 8 #47"
+          regex = ~r/^([a-zA-Z0-9\s]+?)(?::)?\s+(\d+)(?:\s+#(\d+))?$/
+          case Regex.run(regex, line) do
+            match when is_list(match) ->
+              [_, name, id | rest] = match
+              internal_id = case rest do
+                [val] when val != "" -> val
+                _ -> nil
+              end
+
+              header_name = String.trim(name)
+
+              # Try finding "End <Name> <ID>" first
+              end_tag_regex = ~r/^End\s+#{Regex.escape(header_name)}\s+#{Regex.escape(id)}\s*$/
+              end_idx = find_end_index_regex(lines, i + 1, end_tag_regex)
+
+              if end_idx do
+                 body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+                 {parsed_body, _} = parse_lines(body, 0, %{})
+
+                 parsed_body = Map.put(parsed_body, "ID", id)
+                 parsed_body = if internal_id, do: Map.put(parsed_body, "DBID", internal_id), else: parsed_body
+
+                 acc2 = put_block(acc, header_name, parsed_body)
+                 parse_lines(lines, end_idx + 1, acc2)
+              else
+                 # Try finding "End <Name>" without ID
+                 end_tag_regex_2 = ~r/^End\s+#{Regex.escape(header_name)}\s*$/
+                 end_idx_2 = find_end_index_regex(lines, i + 1, end_tag_regex_2)
+
+                 if end_idx_2 do
+                    body = Enum.slice(lines, i + 1, end_idx_2 - (i + 1))
+                    {parsed_body, _} = parse_lines(body, 0, %{})
+                    parsed_body = Map.put(parsed_body, "ID", id)
+                    parsed_body = if internal_id, do: Map.put(parsed_body, "DBID", internal_id), else: parsed_body
+                    acc2 = put_block(acc, header_name, parsed_body)
+                    parse_lines(lines, end_idx_2 + 1, acc2)
+                 else
+                    # Check if it's actually a KV (e.g. "Single: 81")
+                    if String.contains?(line, ":") do
+                       # Treat as KV
+                       case kv_line(line <> "\n") do
+                          {:ok, [{:kv, key, val}], _, _, _, _} ->
+                            acc2 = put_kv(acc, key, val)
+                            parse_lines(lines, i + 1, acc2)
+                          _ ->
+                            # Fallback to implicit block if KV parse fails (unlikely if colon exists)
+                            handle_implicit_block(lines, i, acc, header_name, id, internal_id)
+                       end
+                    else
+                       handle_implicit_block(lines, i, acc, header_name, id, internal_id)
+                    end
+                 end
+              end
+
+            nil ->
+              # Standard KV or Generic Block
+              if String.contains?(line, ":") do
+                case kv_line(line <> "\n") do
+                  {:ok, [{:kv, key, val}], _, _, _, _} ->
+                    acc2 = put_kv(acc, key, val)
+                    parse_lines(lines, i + 1, acc2)
+                  _ ->
+                    handle_generic_block(lines, i, acc, line)
+                end
+              else
+                handle_generic_block(lines, i, acc, line)
+              end
+          end
+      end
+    end
+  end
+
+  defp handle_implicit_block(lines, i, acc, header_name, id, internal_id) do
+    end_idx_implicit = find_implicit_end(lines, i + 1, header_name)
+
+    body = Enum.slice(lines, i + 1, end_idx_implicit - (i + 1))
+    {parsed_body, _} = parse_lines(body, 0, %{})
+    parsed_body = Map.put(parsed_body, "ID", id)
+    parsed_body = if internal_id, do: Map.put(parsed_body, "DBID", internal_id), else: parsed_body
+
+    acc2 = put_block(acc, header_name, parsed_body)
+
+    # If we hit "--", skip it
+    next_i = end_idx_implicit
+    next_line = if next_i < length(lines), do: Enum.at(lines, next_i) |> String.trim(), else: ""
+    next_i = if next_line == "--", do: next_i + 1, else: next_i
+
+    parse_lines(lines, next_i, acc2)
+  end
+
+  defp handle_generic_block(lines, i, acc, header) do
+    end_idx = find_end_index(lines, i + 1, header)
+
+    if end_idx == nil do
+      if header == "--" do
+        parse_lines(lines, i + 1, acc)
+      else
+        acc2 = put_block(acc, header, %{})
+        parse_lines(lines, i + 1, acc2)
+      end
+    else
+      body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+
+      if header in ["Glossary", "Purpose", "Description"] do
+        acc2 = put_kv(acc, header, body)
+        parse_lines(lines, end_idx + 1, acc2)
+      else
+        {parsed_body, _} = parse_lines(body, 0, %{})
+
+        if String.ends_with?(header, "Pool") do
+             # Transform list of objects to ID-keyed map
+             # parsed_body is likely %{"Activity" => [list]}
+             # We want to merge all lists found in parsed_body and key them by ID
+             transformed_body = Enum.reduce(parsed_body, %{}, fn {_k, list}, acc_pool ->
+                if is_list(list) do
+                  Enum.reduce(list, acc_pool, fn item, acc_inner ->
+                    id = Map.get(item, "ID")
+                    if id do
+                      Map.put(acc_inner, id, item)
+                    else
+                      acc_inner
+                    end
+                  end)
+                else
+                  acc_pool
+                end
+             end)
+             acc2 = Map.put(acc, header, transformed_body)
+             parse_lines(lines, end_idx + 1, acc2)
+        else
+             acc2 = put_block(acc, header, parsed_body)
+             parse_lines(lines, end_idx + 1, acc2)
+        end
+      end
+    end
+  end
+
+  defp find_end_index(lines, start_idx, header) do
+    re = Regex.compile!("^End\\s+" <> Regex.escape(header) <> "\\s*$")
+    find_end_index_regex(lines, start_idx, re)
+  end
+
+  defp find_end_index_regex(lines, start_idx, regex) do
+    slice = Enum.slice(lines, start_idx..-1//1)
+    case Enum.find_index(slice, fn l -> Regex.match?(regex, String.trim(l)) end) do
+      nil -> nil
+      offset -> start_idx + offset
+    end
+  end
+
+  defp find_implicit_end(lines, start_idx, header_name) do
+    slice = Enum.slice(lines, start_idx..-1//1)
+    offset = Enum.find_index(slice, fn l ->
+      t = String.trim(l)
+      t == "--" or
+      String.starts_with?(t, "End ") or
+      Regex.match?(~r/^#{Regex.escape(header_name)}\s+\d+/, t)
+    end)
+
+    if offset, do: start_idx + offset, else: length(lines)
+  end
+
+  defp parse_parent_value(val) do
+    if val == "None" do
+      "None"
+    else
+      parts = String.split(val, ",")
+      Enum.reduce(parts, %{}, fn part, acc ->
+        part = String.trim(part)
+        cond do
+          String.contains?(part, ":") ->
+            [k, v] = String.split(part, ":", parts: 2)
+            Map.put(acc, String.trim(k), String.trim(v))
+          true ->
+            case Regex.run(~r/^(\w+)\s+(\d+)$/, part) do
+              [_, k, v] -> Map.put(acc, k, v)
+              _ -> acc
+            end
+        end
+      end)
+    end
+  end
+
+  defp parse_ai0_header(line) do
+    # Parse: "AI0 Neutral Text;  Version:2.20;  12/25/2025  02:30.36"
+    parts = String.split(line, ";")
+
+    format = Enum.at(parts, 0, "") |> String.trim()
+    version_part = Enum.at(parts, 1, "") |> String.trim()
+    datetime_part = Enum.at(parts, 2, "") |> String.trim()
+
+    version =
+      case String.split(version_part, ":") do
+        [_key, val] -> String.trim(val)
+        _ -> ""
+      end
+
+    {date, time} =
+      case String.split(datetime_part) do
+        [d, t] -> {String.trim(d), String.trim(t)}
+        [d] -> {String.trim(d), ""}
+        _ -> {"", ""}
+      end
+
+    %{
+      "Format" => format,
+      "Version" => version,
+      "DTM" => %{
+        "Date" => date,
+        "Time" => time
+      }
+    }
+  end
+
+  defp parse_assignment_items(lines) do
+    do_parse_assignment_items(lines, 0, [])
+  end
+
+  defp do_parse_assignment_items(lines, i, acc) do
+    if i >= length(lines) do
+      acc
+    else
+      line = Enum.at(lines, i) |> String.trim()
+
+      cond do
+        line == "" -> do_parse_assignment_items(lines, i + 1, acc)
+
+        # Match pattern: "Type ID (Name)"
+        match = Regex.run(~r/^(\w+)\s+(\d+)\s+\((.*)\)$/, line) ->
+          [_, type, id, name] = match
+
+          item = %{
+            "Type" => type,
+            "ID" => id,
+            "Name" => name
+          }
+
+          do_parse_assignment_items(lines, i + 1, acc ++ [item])
+
+        true ->
+          do_parse_assignment_items(lines, i + 1, acc)
+      end
+    end
+  end
+
+  defp parse_icom_items(lines) do
+    do_parse_icom_items(lines, 0, [])
+  end
+
+  defp do_parse_icom_items(lines, i, acc) do
+    if i >= length(lines) do
+      acc
+    else
+      line = Enum.at(lines, i) |> String.trim()
+
+      cond do
+        line == "" -> do_parse_icom_items(lines, i + 1, acc)
+
+        match = Regex.run(~r/^(\d+)\s+\((.*)\)(?:\s+#(\d+))?,?$/, line) ->
+          [_, id, name | rest] = match
+          internal_id = case rest do
+            [val] when val != "" -> val
+            _ -> nil
+          end
+
+          item = %{"ID" => id, "Name" => name}
+          item = if internal_id, do: Map.put(item, "DBID", internal_id), else: item
+
+          {updated_item, next_i} = parse_item_properties(lines, i + 1, item)
+          do_parse_icom_items(lines, next_i, acc ++ [updated_item])
+
+        true ->
+          do_parse_icom_items(lines, i + 1, acc)
+      end
+    end
+  end
+
+  defp parse_item_properties(lines, i, item) do
+    if i >= length(lines) do
+      {item, i}
+    else
+      line = Enum.at(lines, i) |> String.trim()
+
+      cond do
+        Regex.match?(~r/^\d+\s+\(.*\)(?:\s+#\d+)?,?$/, line) -> {item, i}
+
+        String.starts_with?(line, "ABC Data:") ->
+          val = String.trim_leading(line, "ABC Data:") |> String.trim()
+          # Handle "Time; 1" -> {"Time": "1"}
+          parsed_val = if String.contains?(val, ";") do
+             [k, v] = String.split(val, ";", parts: 2)
+             %{String.trim(k) => String.trim(v)}
+          else
+             val
+          end
+          item = put_kv(item, "ABC Data", parsed_val)
+          parse_item_properties(lines, i + 1, item)
+
+        line == "ABC Data" ->
+          end_idx = find_end_index(lines, i + 1, "ABC Data")
+          if end_idx do
+             body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+             # Parse body as lines, but we need to fix the "Key: Value" -> [{}, {}] issue
+             # The issue is that `kv_line` parser produces `{:kv, key, value}`.
+             # If value is empty string (because it was `Cost/Time: 0.0000`), `kv_line` might be misinterpreting or `put_kv` logic is weird.
+             # Actually, looking at the user's output: "Cost/Time: 0.000000": [{}]
+             # This means the parser saw "Cost/Time: 0.000000" as a KEY with empty value?
+             # Ah, the `kv` parser: `key = ascii_string(...)`. If the line is `Cost/Time:  0.000000`,
+             # and `key` allows `:`, then it might consume the whole thing as a key if the colon logic is flawed.
+             # But `key` does NOT allow `:`.
+             # Wait, `key` allows `.` and `\s`.
+             # Let's look at `kv` definition again.
+             # `key` = ascii_string([?A..?Z, ?a..?z, ?0..?9, ?_ , ?\-, ?., ?\s, ?#], min: 1)
+             # `colon` = string(":")
+             # If line is `Cost/Time:  0.000000`
+             # `key` matches `Cost/Time`? No, `/` is not in the list.
+             # So `kv` parser fails.
+             # Then it falls back to `handle_generic_block` or `handle_implicit_block`.
+             # If it falls back to `handle_generic_block`, it treats the whole line as a header?
+             # "Cost/Time:  0.000000" -> header.
+             # Then `put_block` puts `header` => `%{}` (empty map) or `[]`.
+             # That explains `{"Cost/Time: 0.000000": [{}]}`.
+
+             # We need to fix `key` definition to include `/` or handle this better.
+             # AND we need to process the parsed body of ABC Data to flatten it.
+
+             {parsed_abc, _} = parse_lines(body, 0, %{})
+
+             # Flatten/Fix the parsed ABC Data map
+             fixed_abc = Enum.reduce(parsed_abc, %{}, fn {k, v}, acc_abc ->
+                # If k contains ":", it might be a misparsed KV
+                # v might be [%{}] (list with empty map) because put_block wraps body in list
+                if String.contains?(k, ":") and (v == [] or v == [%{}] or v == [{}]) do
+                   [real_k, real_v] = String.split(k, ":", parts: 2)
+                   Map.put(acc_abc, String.trim(real_k), String.trim(real_v))
+                else
+                   Map.put(acc_abc, k, v)
+                end
+             end)
+
+             item = put_kv(item, "ABC Data", fixed_abc)
+             parse_item_properties(lines, end_idx + 1, item)
+          else
+             parse_item_properties(lines, i + 1, item)
+          end
+
+        line == "Property List" ->
+           end_idx = find_end_index(lines, i + 1, "Property List")
+           if end_idx do
+             body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+             {parsed_props, _} = parse_lines(body, 0, %{})
+             # Flatten Property List inside Concept List items
+             props = Map.get(parsed_props, "Property", [])
+             props = if is_list(props), do: props, else: [props]
+
+             item = put_kv(item, "Property List", props)
+             parse_item_properties(lines, end_idx + 1, item)
+           else
+             parse_item_properties(lines, i + 1, item)
+           end
+
+        true ->
+          parse_item_properties(lines, i + 1, item)
+      end
+    end
+  end
+
+  defp put_kv(acc, key, val) do
+    cond do
+      Map.has_key?(acc, key) ->
+        existing = Map.get(acc, key)
+        case existing do
+          list when is_list(list) -> Map.put(acc, key, list ++ [val])
+          other -> Map.put(acc, key, [other, val])
+        end
+
+      true -> Map.put(acc, key, val)
+    end
+  end
+
+  defp put_block(acc, header, parsed_body) do
+    key = header
+
+    cond do
+      Map.has_key?(acc, key) ->
+        existing = Map.get(acc, key)
+        new_list =
+          case existing do
+            list when is_list(list) -> list ++ [parsed_body]
+            other -> [other, parsed_body]
+          end
+
+        Map.put(acc, key, new_list)
+
+      true -> Map.put(acc, key, [parsed_body])
+    end
+  end
+end
