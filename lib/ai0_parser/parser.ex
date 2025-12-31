@@ -164,12 +164,49 @@ defmodule Ai0Parser.Parser do
     Enum.find(activities, fn a -> a["ID"] == id end)
   end
 
+  defp process_pool_breakdown(breakdown) do
+    # Extract Concept list and convert to Concepts with numeric IDs
+    # Keep all other fields as-is, including Type field if present
+    case Map.get(breakdown, "Concept") do
+      concepts when is_list(concepts) ->
+        # Flatten to handle put_block wrapping - extract the actual string list
+        flat_concepts = List.flatten(concepts)
+
+        # Extract numeric IDs from the concept reference strings
+        concept_ids = Enum.map(flat_concepts, fn item ->
+          # Item should be a string, but handle it safely
+          line = if is_binary(item), do: item, else: to_string(item)
+          case Integer.parse(String.trim(line)) do
+            {id, _} -> to_string(id)
+            :error -> nil
+          end
+        end) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+        # Remove the Concept list
+        breakdown_cleaned = Map.delete(breakdown, "Concept")
+
+        # Add the Concepts list with just the numeric IDs
+        if Enum.empty?(concept_ids) do
+          breakdown_cleaned
+        else
+          Map.put(breakdown_cleaned, "Concepts", concept_ids)
+        end
+      nil ->
+        Map.delete(breakdown, "Concept")
+      _ ->
+        breakdown
+    end
+  end
+
   defp parse_lines(lines, i, acc) do
     len = length(lines)
     if i >= len do
       {acc, i}
     else
       line = Enum.at(lines, i) |> String.replace("\t", " ") |> String.trim()
+
+      # Debug: log lines that look like breakdowns
+      # (removed for clean output)
 
       cond do
         line == "" -> parse_lines(lines, i + 1, acc)
@@ -203,8 +240,8 @@ defmodule Ai0Parser.Parser do
              parse_lines(lines, end_idx + 1, acc2)
           end
 
-        # Concept List and Concept
-        line in ["Concept List", "Concept"] ->
+        # Concept List
+        line == "Concept List" ->
           header = line
           end_idx = find_end_index(lines, i + 1, header)
           if end_idx == nil do
@@ -214,6 +251,31 @@ defmodule Ai0Parser.Parser do
              body = Enum.slice(lines, i + 1, end_idx - (i + 1))
              parsed_items = parse_icom_items(body)
              acc2 = put_block(acc, header, parsed_items)
+             parse_lines(lines, end_idx + 1, acc2)
+          end
+
+        # Concept block (for breakdowns) - collects concept references like "11  (Name)"
+        line == "Concept" ->
+          end_idx = find_end_index(lines, i + 1, "Concept")
+          if end_idx == nil do
+             acc2 = put_block(acc, "Concept", [])
+             parse_lines(lines, i + 1, acc2)
+          else
+             body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+             # Extract concept references - lines that start with digits optionally followed by description
+             concept_refs = Enum.map(body, fn line ->
+               line = String.trim(line)
+               case Integer.parse(line) do
+                 {id, _rest} -> {to_string(id), line}
+                 :error -> nil
+               end
+             end) |> Enum.reject(&is_nil/1)
+
+             # Store as a list of strings (the IDs with descriptions)
+             # This will be processed later in process_pool_breakdown
+             parsed_items = Enum.map(concept_refs, fn {_id, full_line} -> full_line end)
+
+             acc2 = put_block(acc, "Concept", parsed_items)
              parse_lines(lines, end_idx + 1, acc2)
           end
 
@@ -279,8 +341,8 @@ defmodule Ai0Parser.Parser do
           end
 
         true ->
-          # Block Header with ID: "Activity 1", "Diagram: 1", "Note 1", "Activity 8 #47"
-          regex = ~r/^([a-zA-Z0-9\s]+?)(?::)?\s+(\d+)(?:\s+#(\d+))?$/
+          # Block Header with ID: "Activity 1", "Diagram: 1", "Note 1", "Activity 8 #47", "Breakdown #1"
+          regex = ~r/^([a-zA-Z0-9\s]+?)(?::)?\s+#?(\d+)(?:\s+#(\d+))?$/
           case Regex.run(regex, line) do
             match when is_list(match) ->
               [_, name, id | rest] = match
@@ -291,8 +353,8 @@ defmodule Ai0Parser.Parser do
 
               header_name = String.trim(name)
 
-              # Try finding "End <Name> <ID>" first
-              end_tag_regex = ~r/^End\s+#{Regex.escape(header_name)}\s+#{Regex.escape(id)}\s*$/
+              # Try finding "End <Name> <ID>" first (with or without # before ID)
+              end_tag_regex = ~r/^End\s+#{Regex.escape(header_name)}\s+#?#{Regex.escape(id)}\s*$/
               end_idx = find_end_index_regex(lines, i + 1, end_tag_regex)
 
               if end_idx do
@@ -301,6 +363,13 @@ defmodule Ai0Parser.Parser do
 
                  parsed_body = Map.put(parsed_body, "ID", id)
                  parsed_body = if internal_id, do: Map.put(parsed_body, "DBID", internal_id), else: parsed_body
+
+                 # Special handling for Breakdown blocks in Concept Pool
+                 parsed_body = if String.trim(header_name) == "Breakdown" do
+                   process_pool_breakdown(parsed_body)
+                 else
+                   parsed_body
+                 end
 
                  acc2 = put_block(acc, header_name, parsed_body)
                  parse_lines(lines, end_idx + 1, acc2)
