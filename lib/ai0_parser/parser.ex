@@ -428,22 +428,9 @@ defmodule Ai0Parser.Parser do
                  acc2 = put_block(acc, header_name, parsed_body)
                  parse_lines(lines, end_idx + 1, acc2)
               else
-                 # Fallback: try "End <Name>" without ID
-                 end_tag_regex_2 = ~r/^End\s+#{Regex.escape(header_name)}\s*$/
-                 end_idx_2 = find_end_index_regex(lines, i + 1, end_tag_regex_2)
-
-                 if end_idx_2 do
-                    body = Enum.slice(lines, i + 1, end_idx_2 - (i + 1))
-                    {parsed_body, _} = parse_lines(body, 0, %{})
-                    parsed_body = Map.put(parsed_body, "ID", id)
-                    parsed_body = if internal_id, do: Map.put(parsed_body, "DBID", internal_id), else: parsed_body
-                    acc2 = put_block(acc, header_name, parsed_body)
-                    parse_lines(lines, end_idx_2 + 1, acc2)
-                 else
-                    # Final fallback: implicit termination (but log a warning)
-                    IO.warn("Warning: Block '#{header_name} #{id}' at line #{i + 1} has no explicit end marker, using implicit termination")
-                    handle_implicit_block(lines, i, acc, header_name, id, internal_id)
-                 end
+                 # No exact "End <Name> <ID>" found, use implicit termination
+                 IO.warn("Warning: Block '#{header_name} #{id}' at line #{i + 1} has no exact end marker 'End #{header_name} #{id}', using implicit termination")
+                 handle_implicit_block(lines, i, acc, header_name, id, internal_id)
               end
 
             nil ->
