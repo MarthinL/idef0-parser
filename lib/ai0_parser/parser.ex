@@ -251,9 +251,6 @@ defmodule Ai0Parser.Parser do
     else
       line = Enum.at(lines, i) |> String.replace("\t", " ") |> String.trim()
 
-      # Debug: log lines that look like breakdowns
-      # (removed for clean output)
-
       cond do
         line == "" -> parse_lines(lines, i + 1, acc)
         String.starts_with?(line, "/*") -> parse_lines(lines, i + 1, acc)
@@ -372,8 +369,9 @@ defmodule Ai0Parser.Parser do
              parse_lines(lines, end_idx + 1, acc2)
           end
 
-        # Flatten Lists: Breakdown, Property, Source, Note
-        line in ["Breakdown List", "Property List", "Source List", "Note List"] ->
+        # Note List - special handling for item references
+        String.contains?(line, "Note") and String.contains?(line, "List") ->
+          IO.puts("DEBUG: Matched Note List: #{inspect(line)}")
           header = line
           end_idx = find_end_index(lines, i + 1, header)
           if end_idx == nil do
@@ -381,26 +379,22 @@ defmodule Ai0Parser.Parser do
              parse_lines(lines, i + 1, acc2)
           else
              body = Enum.slice(lines, i + 1, end_idx - (i + 1))
-             {parsed_map, _} = parse_lines(body, 0, %{})
-
-             # Determine inner key
-             inner_key = case header do
-               "Breakdown List" -> "Breakdown"
-               "Property List" -> "Property"
-               "Source List" -> "Source" # Assuming Source
-               "Note List" -> "Note"
-               _ -> String.replace(header, " List", "")
-             end
-
-             items = Map.get(parsed_map, inner_key, [])
-             # Ensure items is a list (it might be a single map if put_block logic changes, but currently it is a list)
-             items = if is_list(items), do: items, else: [items]
-
+             # Note Lists contain item references like "2  (ModelCode: PRJ)"
+             items = Enum.map(body, fn line ->
+               case Regex.run(~r/^\s*(\d+)\s+\((.+)\)\s*$/, line) do
+                 [_, id_str, name] ->
+                   %{"ID" => String.to_integer(id_str), "Name" => String.trim(name)}
+                 _ ->
+                   # If it doesn't match the expected format, treat as other content
+                   %{"content" => String.trim(line)}
+               end
+             end)
              acc2 = Map.put(acc, header, items)
              parse_lines(lines, end_idx + 1, acc2)
           end
 
         true ->
+
           # First try block header patterns (including those with ":")
           block_header_regex = ~r/^(Activity|Diagram|Breakdown|Concept|Note|Source|Costdriver)\b(?::)?\s*#?(\d+)(?:\s+#(\d+))?$/
           case Regex.run(block_header_regex, line) do
@@ -453,18 +447,27 @@ defmodule Ai0Parser.Parser do
               end
 
             nil ->
-              # Not a block header, check if it's a KV pair
-              if String.contains?(line, ":") do
-                case kv_line(line <> "\n") do
-                  {:ok, [{:kv, key, val}], _, _, _, _} ->
-                    acc2 = put_kv(acc, key, val)
-                    parse_lines(lines, i + 1, acc2)
-                  _ ->
-                    raise "Parse error: Invalid key-value line: '#{line}'"
-                end
-              else
-                # Not KV, treat as generic block
-                handle_generic_block(lines, i, acc, line)
+              # Check if it's a list item
+              case Regex.run(~r/^\s*(\d+)\s+\((.+)\)\s*$/, line) do
+                [_, id_str, name] ->
+                  # This is a list item reference
+                  item = %{"ID" => String.to_integer(id_str), "Name" => String.trim(name)}
+                  acc2 = put_block(acc, "item", item)
+                  parse_lines(lines, i + 1, acc2)
+                nil ->
+                  # Not a list item, check if it's a KV pair
+                  if String.contains?(line, ":") do
+                    case kv_line(line <> "\n") do
+                      {:ok, [{:kv, key, val}], _, _, _, _} ->
+                        acc2 = put_kv(acc, key, val)
+                        parse_lines(lines, i + 1, acc2)
+                      _ ->
+                        raise "Parse error: Invalid key-value line: '#{line}'"
+                    end
+                  else
+                    # Not KV, treat as generic block
+                    handle_generic_block(lines, i, acc, line)
+                  end
               end
           end
       end
