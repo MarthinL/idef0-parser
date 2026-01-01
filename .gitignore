@@ -20,6 +20,6 @@ erl_crash.dump
 *.app
 ebin/
 
-# Output files (generated from processing)
-output*.json
-IMP.json
+# Test files 
+/*.TXT
+/*.json

@@ -6,7 +6,7 @@ defmodule Ai0Parser.Parser do
   import NimbleParsec
 
   # simple kv parser: `Key:  Value` -> {:kv, key, value}
-  key = ascii_string([?A..?Z, ?a..?z, ?0..?9, ?_ , ?\-, ?., ?\s, ?#], min: 1)
+  key = ascii_string([?A..?Z, ?a..?z, ?0..?9, ?_ , ?\-, ?., ?\s, ?#, ?/], min: 1)
   colon = string(":") |> ignore()
   spaces = ascii_string([?\s], min: 0)
   value = utf8_string([], min: 0)
@@ -36,6 +36,52 @@ defmodule Ai0Parser.Parser do
   end
 
   defp restructure_output(data) do
+    # Check if this is a repository file (has Project Summary)
+    if Map.has_key?(data, "Project Summary") do
+      restructure_repository_output(data)
+    else
+      restructure_model_output(data)
+    end
+  end
+
+  defp restructure_repository_output(data) do
+    # Extract project summary
+    project_summary = Map.get(data, "Project Summary", %{})
+    creator = Map.get(project_summary, "Creator", "")
+    description = Map.get(project_summary, "Description", [])
+
+    # Get model assignments
+    assignments = if Map.has_key?(data, "Assignment List"), do: flatten_list_wrapper(Map.get(data, "Assignment List")), else: []
+    models = Enum.filter(assignments, fn a -> a["Type"] == "Model" end)
+
+    # Get all diagrams
+    diagrams = if Map.has_key?(data, "Diagram List"), do: flatten_diagram_list(Map.get(data, "Diagram List")), else: []
+
+    # Group diagrams by model based on their top-level parent
+    models_with_diagrams = Enum.map(models, fn model ->
+      model_id = String.to_integer(model["ID"])
+      model_diagrams = find_model_diagrams(diagrams, model_id)
+
+      # Create model structure
+      %{
+        "Name" => model["Name"],
+        "Context Diagram ID" => to_string(model_id),
+        "Pools" => extract_model_pools(data),
+        "Lists" => extract_model_lists(data, model_diagrams)
+      }
+    end)
+
+    # Build repository structure
+    %{
+      "Project" => %{
+        "Creator" => creator,
+        "Description" => description,
+        "Models" => models_with_diagrams
+      }
+    }
+  end
+
+  defp restructure_model_output(data) do
     # Extract header (it's already parsed by parse_ai0_header)
     header = Map.get(data, "AI0 Neutral Text;  Version", %{})
 
@@ -112,7 +158,7 @@ defmodule Ai0Parser.Parser do
 
   defp compute_numbering_recursive(diagrams, activity_numbers, concept_numbers) do
     Enum.reduce(diagrams, {activity_numbers, concept_numbers}, fn diagram, {act_nums, conc_nums} ->
-      if diagram["Parent"] == "None" do
+      if diagram["Parent"] == %{} do
         # Context diagram
         [activity | _] = diagram["Activity List"]
         activity_id = activity["ID"]
@@ -279,6 +325,20 @@ defmodule Ai0Parser.Parser do
              parse_lines(lines, end_idx + 1, acc2)
           end
 
+        # Project Summary - special handling to parse project info
+        line == "Project Summary" ->
+          header = line
+          end_idx = find_end_index(lines, i + 1, header)
+          if end_idx == nil do
+             acc2 = Map.put(acc, header, %{})
+             parse_lines(lines, i + 1, acc2)
+          else
+             body = Enum.slice(lines, i + 1, end_idx - (i + 1))
+             {parsed_summary, _} = parse_lines(body, 0, %{})
+             acc2 = Map.put(acc, header, parsed_summary)
+             parse_lines(lines, end_idx + 1, acc2)
+          end
+
         # Assignment List - special handling to parse assignments
         line == "Assignment List" ->
           header = line
@@ -341,9 +401,9 @@ defmodule Ai0Parser.Parser do
           end
 
         true ->
-          # Block Header with ID: "Activity 1", "Diagram: 1", "Note 1", "Activity 8 #47", "Breakdown #1"
-          regex = ~r/^([a-zA-Z0-9\s]+?)(?::)?\s+#?(\d+)(?:\s+#(\d+))?$/
-          case Regex.run(regex, line) do
+          # First try block header patterns (including those with ":")
+          block_header_regex = ~r/^(Activity|Diagram|Breakdown|Concept|Note|Source|Costdriver)\b(?::)?\s*#?(\d+)(?:\s+#(\d+))?$/
+          case Regex.run(block_header_regex, line) do
             match when is_list(match) ->
               [_, name, id | rest] = match
               internal_id = case rest do
@@ -353,7 +413,7 @@ defmodule Ai0Parser.Parser do
 
               header_name = String.trim(name)
 
-              # Try finding "End <Name> <ID>" first (with or without # before ID)
+              # Try "End <Name> <ID>" first (strict), then "End <Name>" as fallback
               end_tag_regex = ~r/^End\s+#{Regex.escape(header_name)}\s+#?#{Regex.escape(id)}\s*$/
               end_idx = find_end_index_regex(lines, i + 1, end_tag_regex)
 
@@ -374,7 +434,7 @@ defmodule Ai0Parser.Parser do
                  acc2 = put_block(acc, header_name, parsed_body)
                  parse_lines(lines, end_idx + 1, acc2)
               else
-                 # Try finding "End <Name>" without ID
+                 # Fallback: try "End <Name>" without ID
                  end_tag_regex_2 = ~r/^End\s+#{Regex.escape(header_name)}\s*$/
                  end_idx_2 = find_end_index_regex(lines, i + 1, end_tag_regex_2)
 
@@ -386,34 +446,24 @@ defmodule Ai0Parser.Parser do
                     acc2 = put_block(acc, header_name, parsed_body)
                     parse_lines(lines, end_idx_2 + 1, acc2)
                  else
-                    # Check if it's actually a KV (e.g. "Single: 81")
-                    if String.contains?(line, ":") do
-                       # Treat as KV
-                       case kv_line(line <> "\n") do
-                          {:ok, [{:kv, key, val}], _, _, _, _} ->
-                            acc2 = put_kv(acc, key, val)
-                            parse_lines(lines, i + 1, acc2)
-                          _ ->
-                            # Fallback to implicit block if KV parse fails (unlikely if colon exists)
-                            handle_implicit_block(lines, i, acc, header_name, id, internal_id)
-                       end
-                    else
-                       handle_implicit_block(lines, i, acc, header_name, id, internal_id)
-                    end
+                    # Final fallback: implicit termination (but log a warning)
+                    IO.warn("Warning: Block '#{header_name} #{id}' at line #{i + 1} has no explicit end marker, using implicit termination")
+                    handle_implicit_block(lines, i, acc, header_name, id, internal_id)
                  end
               end
 
             nil ->
-              # Standard KV or Generic Block
+              # Not a block header, check if it's a KV pair
               if String.contains?(line, ":") do
                 case kv_line(line <> "\n") do
                   {:ok, [{:kv, key, val}], _, _, _, _} ->
                     acc2 = put_kv(acc, key, val)
                     parse_lines(lines, i + 1, acc2)
                   _ ->
-                    handle_generic_block(lines, i, acc, line)
+                    raise "Parse error: Invalid key-value line: '#{line}'"
                 end
               else
+                # Not KV, treat as generic block
                 handle_generic_block(lines, i, acc, line)
               end
           end
@@ -513,7 +563,7 @@ defmodule Ai0Parser.Parser do
 
   defp parse_parent_value(val) do
     if val == "None" do
-      "None"
+      %{}
     else
       parts = String.split(val, ",")
       Enum.reduce(parts, %{}, fn part, acc ->
@@ -745,5 +795,81 @@ defmodule Ai0Parser.Parser do
 
       true -> Map.put(acc, key, [parsed_body])
     end
+  end
+
+  # Helper functions for repository restructuring
+
+  defp find_model_diagrams(diagrams, model_id) do
+    # Find the context diagram for this model (Parent: empty map, ID matches model_id)
+    context_diagram = Enum.find(diagrams, fn d ->
+      d["Parent"] == %{} && d["ID"] == to_string(model_id)
+    end)
+
+    if context_diagram do
+      # Find all diagrams that belong to this model (same top-level parent or descendants)
+      context_id = context_diagram["ID"]
+      Enum.filter(diagrams, fn d ->
+        parent = d["Parent"]
+        # Direct children of context diagram
+        (is_map(parent) && parent["Diagram"] == context_id) ||
+        # The context diagram itself
+        d["ID"] == context_id
+      end)
+    else
+      []
+    end
+  end
+
+  defp extract_model_pools(data) do
+    # For now, include all pools in each model
+    pools = %{}
+    pools = if Map.has_key?(data, "Activity Pool"), do: Map.put(pools, "Activities", Map.get(data, "Activity Pool")), else: pools
+    pools = if Map.has_key?(data, "Concept Pool"), do: Map.put(pools, "Concepts", Map.get(data, "Concept Pool")), else: pools
+    pools = if Map.has_key?(data, "Costdriver Pool"), do: Map.put(pools, "Costdrivers", Map.get(data, "Costdriver Pool")), else: pools
+    pools = if Map.has_key?(data, "Note Pool"), do: Map.put(pools, "Notes", Map.get(data, "Note Pool")), else: pools
+    pools
+  end
+
+  defp extract_model_lists(data, model_diagrams) do
+    lists = %{}
+
+    # Include only the diagrams for this model
+    lists = Map.put(lists, "Diagrams", model_diagrams)
+
+    # For assignments, include only the model assignment itself
+    # (The numbering assignments will be computed per model)
+    model_assignments = if Map.has_key?(data, "Assignment List") do
+      all_assignments = flatten_list_wrapper(Map.get(data, "Assignment List"))
+      # Find the model assignment that corresponds to these diagrams
+      context_diagram = Enum.find(model_diagrams, fn d -> d["Parent"] == %{} end)
+      if context_diagram do
+        model_id = context_diagram["ID"]
+        model_assignment = Enum.find(all_assignments, fn a ->
+          a["Type"] == "Model" && a["ID"] == model_id
+        end)
+        if model_assignment, do: [model_assignment], else: []
+      else
+        []
+      end
+    else
+      []
+    end
+
+    # Compute IDEF0 numbering for this model's diagrams
+    model_lists = %{"Diagrams" => model_diagrams}
+    numbering = compute_numbering(model_lists)
+
+    # Add numbering as custom assignments
+    assignments = model_assignments ++ [
+      %{"Name" => "A-Numbers by Activity ID", "Type" => "Custom", "Activity" => numbering["Activity Numbers"]},
+      %{"Name" => "ICOM Numbers by Diagram ID and Concept ID", "Type" => "Custom", "Diagram-Concept" => numbering["Concept Numbers"]}
+    ]
+    lists = Map.put(lists, "Assignments", assignments)
+
+    # Objects in ABC - include all for now
+    objects = if Map.has_key?(data, "Object in ABC List"), do: flatten_list_wrapper(Map.get(data, "Object in ABC List")), else: []
+    lists = Map.put(lists, "Objects in ABC", objects)
+
+    lists
   end
 end

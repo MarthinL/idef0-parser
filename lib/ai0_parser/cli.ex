@@ -56,6 +56,22 @@ defmodule Ai0Parser.CLI do
           }
         }
 
+      %{"Project" => project} ->
+        %{
+          "Project" => %{
+            "Creator" => Map.get(project, "Creator", ""),
+            "Description" => Map.get(project, "Description", []),
+            "Models" => Enum.map(Map.get(project, "Models", []), fn model ->
+              %{
+                "Name" => Map.get(model, "Name", ""),
+                "Context Diagram ID" => Map.get(model, "Context Diagram ID", ""),
+                "Pools" => filter_pools(Map.get(model, "Pools", %{}), :abc),
+                "Lists" => filter_lists(Map.get(model, "Lists", %{}), :abc)
+              }
+            end)
+          }
+        }
+
       _ ->
         data
     end
@@ -71,6 +87,22 @@ defmodule Ai0Parser.CLI do
             "Header" => Map.get(source, "Header", %{}),
             "Pools" => filter_pools(Map.get(source, "Pools", %{}), :prop),
             "Lists" => filter_lists(Map.get(source, "Lists", %{}), :prop)
+          }
+        }
+
+      %{"Project" => project} ->
+        %{
+          "Project" => %{
+            "Creator" => Map.get(project, "Creator", ""),
+            "Description" => Map.get(project, "Description", []),
+            "Models" => Enum.map(Map.get(project, "Models", []), fn model ->
+              %{
+                "Name" => Map.get(model, "Name", ""),
+                "Context Diagram ID" => Map.get(model, "Context Diagram ID", ""),
+                "Pools" => filter_pools(Map.get(model, "Pools", %{}), :prop),
+                "Lists" => filter_lists(Map.get(model, "Lists", %{}), :prop)
+              }
+            end)
           }
         }
 

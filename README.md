@@ -154,6 +154,12 @@ Source
 - **Diagrams**: Contain references to activities from Activity Pool, organized hierarchically via parent diagram reference
 - **No explicit nesting**: All complexity expressed through ID references across flat pools
 
+### Grammar Specification
+
+For a complete formal specification of the AI0 Neutral Text Format grammar, including EBNF notation, syntax compromises, and parsing rules, see [GRAMMAR.md](GRAMMAR.md).
+
+This document provides the authoritative grammar used by the parser implementation, with detailed explanations of the format's historical design decisions and edge cases.
+
 ## Development
 
 ### Running Tests
