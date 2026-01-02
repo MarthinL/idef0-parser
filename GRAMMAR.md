@@ -226,3 +226,102 @@ This grammar has been validated against:
 - Edge cases including malformed inputs and format variations
 
 The grammar captures the necessary syntactic compromises made for parser compatibility while maintaining format integrity.
+
+## Pool and Block Fields
+
+This section documents the key-value fields parsed within each pool type and block. These are extracted from `kv_pair` elements in block content.
+
+### Activities
+- `Account #`: String (optional)
+- `Creator`: String
+- `Date Created`: Date/time string
+- `Glossary`: Multi-line text block
+- `ID`: Integer
+- `Last Modified`: Date/time string
+- `Name`: String
+- `Object Type`: String (e.g., "Activity")
+- `User Ref`: String (optional)
+
+### Concepts
+- `Account #`: String (optional)
+- `Breakdown List`: Sub-blocks for part-of relationships
+- `Creator`: String
+- `Date Created`: Date/time string
+- `ID`: Integer
+- `Last Modified`: Date/time string
+- `Name`: String
+- `Note List`: References to notes
+- `Object Type`: String (e.g., "Resource", "Cost Object")
+- `Source List`: References to sources
+
+### Notes
+- `Creator`: String
+- `Date Created`: Date/time string
+- `ID`: Integer
+- `Last Modified`: Date/time string
+- `Name`: String
+
+### Properties
+- `Name`: String
+- Additional fields vary by property type
+
+### Costdrivers
+- `Creator`: String
+- `Date Created`: Date/time string
+- `Driver Type`: String (e.g., "PERCENTAGE")
+- `ID`: Integer
+- `Last Modified`: Date/time string
+- `Name`: String
+- `Use Type`: String (e.g., "UNIQUE")
+
+### Sources
+- `Creator`: String
+- `Date Created`: Date/time string
+- `ID`: Integer
+- `Last Modified`: Date/time string
+- `Name`: String
+- `Note List`: References to notes
+- `Source List`: References to other sources
+
+### Unknowns
+- `Creator`: String
+- `Date Created`: Date/time string
+- `ID`: Integer
+- `Last Modified`: Date/time string
+- `Name`: String
+- `Note List`: References to notes
+- `Source List`: References to sources
+
+### Diagrams
+- `Activity List`: Sub-blocks for activities
+- `Breakdown List`: Sub-blocks for breakdowns
+- `Concept List`: Lists of concepts with usage tags
+- `Creator`: String
+- `Date Created`: Date/time string
+- `Description`: Multi-line text block
+- `ID`: Integer
+- `Last Modified`: Date/time string
+- `Name`: String
+- `Note List`: References to notes
+- `Parent`: Compound reference (see Parent References)
+- `Purpose`: Multi-line text block
+- `Review Status`: String (e.g., "Recommended")
+- `Revision Number`: String (e.g., "1")
+
+### Project Summary
+- `Creator`: String
+- `Date Created`: Date/time string
+- `Description`: Multi-line text block
+- `Last Modified`: Date/time string
+- `Used At`: String (optional)
+
+## UsageTag Semantics
+
+UsageTag (#N) is a row identifier from the export query, used for disambiguating reused pool items across diagrams/models. It appears in ICOM lists and activity references to ensure unique identification when the same item is used multiple times.
+
+## Parser Features
+
+The AI0 Parser includes semantic processing beyond the core grammar:
+
+- **Model Abbreviation Extraction**: Automatically extracts abbreviations from notes matching "Model Abbreviation: XXX=Model Name" and adds them to model JSON output.
+- **Filtering Options**: CLI flags (--no-abc, --no-prop, --skip-empty-lists, --no-fix-abbr) for customizing JSON output by removing specific data sections.
