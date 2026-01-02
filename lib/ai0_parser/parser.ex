@@ -49,6 +49,7 @@ defmodule Ai0Parser.Parser do
     project_summary = Map.get(data, "Project Summary", %{})
     creator = Map.get(project_summary, "Creator", "")
     description = Map.get(project_summary, "Description", [])
+    used_at = Map.get(project_summary, "Used At", "")
 
     # Get model assignments
     assignments = if Map.has_key?(data, "Assignment List"), do: flatten_list_wrapper(Map.get(data, "Assignment List")), else: []
@@ -76,6 +77,7 @@ defmodule Ai0Parser.Parser do
       "Project" => %{
         "Creator" => creator,
         "Description" => description,
+        "Used At" => used_at,
         "Models" => models_with_diagrams
       }
     }
@@ -92,6 +94,8 @@ defmodule Ai0Parser.Parser do
     pools = if Map.has_key?(data, "Costdriver Pool"), do: Map.put(pools, "Costdrivers", Map.get(data, "Costdriver Pool")), else: pools
     pools = if Map.has_key?(data, "Note Pool"), do: Map.put(pools, "Notes", Map.get(data, "Note Pool")), else: pools
     pools = if Map.has_key?(data, "Property Pool"), do: Map.put(pools, "Properties", Map.get(data, "Property Pool")), else: pools
+    pools = if Map.has_key?(data, "Source Pool"), do: Map.put(pools, "Sources", Map.get(data, "Source Pool")), else: pools
+    pools = if Map.has_key?(data, "Unknown Pool"), do: Map.put(pools, "Unknowns", Map.get(data, "Unknown Pool")), else: pools
 
     # Separate lists with flattening
     lists = %{}
@@ -396,7 +400,7 @@ defmodule Ai0Parser.Parser do
         true ->
 
           # First try block header patterns (including those with ":")
-          block_header_regex = ~r/^(Activity|Diagram|Breakdown|Concept|Note|Source|Costdriver|Property)\b(?::)?\s*(\d+)(?:\s+#(\d+))?$/
+          block_header_regex = ~r/^(Activity|Diagram|Breakdown|Concept|Note|Source|Costdriver|Unknown|Property)\b(?::)?\s*(\d+)(?:\s+#(\d+))?$/
           case Regex.run(block_header_regex, line) do
             match when is_list(match) ->
               [_, name, id | rest] = match
@@ -819,6 +823,8 @@ defmodule Ai0Parser.Parser do
     pools = if Map.has_key?(data, "Costdriver Pool"), do: Map.put(pools, "Costdrivers", Map.get(data, "Costdriver Pool")), else: pools
     pools = if Map.has_key?(data, "Note Pool"), do: Map.put(pools, "Notes", Map.get(data, "Note Pool")), else: pools
     pools = if Map.has_key?(data, "Property Pool"), do: Map.put(pools, "Properties", Map.get(data, "Property Pool")), else: pools
+    pools = if Map.has_key?(data, "Source Pool"), do: Map.put(pools, "Sources", Map.get(data, "Source Pool")), else: pools
+    pools = if Map.has_key?(data, "Unknown Pool"), do: Map.put(pools, "Unknowns", Map.get(data, "Unknown Pool")), else: pools
     pools
   end
 
