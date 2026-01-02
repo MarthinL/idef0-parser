@@ -117,7 +117,7 @@ icom_list_block ::= icom_list_header icom_item* "End" spaces icom_list_type spac
 icom_list_header ::= icom_list_type spaces "List"
 icom_list_type ::= "Input" | "Output" | "Control" | "Mechanism"
 
-icom_item ::= id spaces "(" name ")" (spaces "#" dbid)? item_properties?
+icom_item ::= id spaces "(" name ")" (spaces "#" usage_tag)? item_properties?
 item_properties ::= (abc_data_section | property_list_section)*
 
 abc_data_section ::= "ABC Data" newline abc_content ("ABC Data" | implicit_end)
@@ -200,7 +200,7 @@ end_marker ::= "End" spaces block_type spaces id
 
 ```
 id ::= digit+
-dbid ::= digit+
+usage_tag ::= digit+
 name ::= [^)]*
 type ::= [A-Za-z]+
 

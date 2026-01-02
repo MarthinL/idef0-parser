@@ -148,7 +148,7 @@ Source
 ## Format Notes
 
 ### AI0 Text Format Specifics
-- **Block structure**: `Type ID #DBID ... End Type ID`
+- **Block structure**: `Type ID #UsageTag ... End Type ID`
 - **ABC Data**: Single KV pairs inline (`ABC Data: Time; 1`), multiple KV pairs in block format
 - **ICOM Lists**: Control List, Input List, Output List, Mechanism List preserve item order
 - **Diagrams**: Contain references to activities from Activity Pool, organized hierarchically via parent diagram reference

@@ -2,16 +2,22 @@ defmodule Ai0Parser.CLI do
   @moduledoc false
 
   def main(argv) do
-    {opts, args} = parse_args(argv)
+    {opts, args, invalid} = parse_args(argv)
+
+    if invalid != [] do
+      IO.puts("Invalid options: #{inspect(invalid)}")
+      System.halt(1)
+    end
 
     case args do
       [path] ->
+        output_file = Keyword.get(opts, :output, "output.json")
         case File.read(path) do
           {:ok, content} ->
             parsed = Ai0Parser.parse_string(content)
             filtered = apply_filters(parsed, opts)
             json = Ai0Parser.to_json(filtered)
-            IO.puts(json)
+            File.write!(output_file, json)
 
           {:error, reason} ->
             IO.puts("Could not read file: #{inspect(reason)}")
@@ -21,26 +27,21 @@ defmodule Ai0Parser.CLI do
       _ ->
         IO.puts("Usage: ai0_parser [OPTIONS] <file>")
         IO.puts("Options:")
-        IO.puts("  --no-abc    Exclude all ABC Data and Objects in ABC list")
-        IO.puts("  --no-prop   Exclude all Property List fields")
+        IO.puts("  --output FILENAME    Output file (default: output.json)")
+        IO.puts("  --no-abc             Exclude all ABC Data and Objects in ABC list")
+        IO.puts("  --no-prop            Exclude all Property List fields")
         System.halt(1)
     end
   end
 
   defp parse_args(argv) do
-    Enum.reduce(argv, {%{}, []}, fn arg, {opts, paths} ->
-      case arg do
-        "--no-abc" -> {Map.put(opts, :no_abc, true), paths}
-        "--no-prop" -> {Map.put(opts, :no_prop, true), paths}
-        path -> {opts, paths ++ [path]}
-      end
-    end)
+    OptionParser.parse(argv, switches: [output: :string, no_abc: :boolean, no_prop: :boolean])
   end
 
   defp apply_filters(data, opts) do
     data
-    |> apply_abc_filter(Map.get(opts, :no_abc, false))
-    |> apply_prop_filter(Map.get(opts, :no_prop, false))
+    |> apply_abc_filter(Keyword.get(opts, :no_abc, false))
+    |> apply_prop_filter(Keyword.get(opts, :no_prop, false))
   end
 
   defp apply_abc_filter(data, false), do: data

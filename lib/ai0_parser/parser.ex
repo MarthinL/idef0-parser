@@ -91,6 +91,7 @@ defmodule Ai0Parser.Parser do
     pools = if Map.has_key?(data, "Concept Pool"), do: Map.put(pools, "Concepts", Map.get(data, "Concept Pool")), else: pools
     pools = if Map.has_key?(data, "Costdriver Pool"), do: Map.put(pools, "Costdrivers", Map.get(data, "Costdriver Pool")), else: pools
     pools = if Map.has_key?(data, "Note Pool"), do: Map.put(pools, "Notes", Map.get(data, "Note Pool")), else: pools
+    pools = if Map.has_key?(data, "Property Pool"), do: Map.put(pools, "Properties", Map.get(data, "Property Pool")), else: pools
 
     # Separate lists with flattening
     lists = %{}
@@ -371,7 +372,6 @@ defmodule Ai0Parser.Parser do
 
         # Note List - special handling for item references
         String.contains?(line, "Note") and String.contains?(line, "List") ->
-          IO.puts("DEBUG: Matched Note List: #{inspect(line)}")
           header = line
           end_idx = find_end_index(lines, i + 1, header)
           if end_idx == nil do
@@ -396,7 +396,7 @@ defmodule Ai0Parser.Parser do
         true ->
 
           # First try block header patterns (including those with ":")
-          block_header_regex = ~r/^(Activity|Diagram|Breakdown|Concept|Note|Source|Costdriver)\b(?::)?\s*#?(\d+)(?:\s+#(\d+))?$/
+          block_header_regex = ~r/^(Activity|Diagram|Breakdown|Concept|Note|Source|Costdriver|Property)\b(?::)?\s*(\d+)(?:\s+#(\d+))?$/
           case Regex.run(block_header_regex, line) do
             match when is_list(match) ->
               [_, name, id | rest] = match
@@ -408,6 +408,7 @@ defmodule Ai0Parser.Parser do
               header_name = String.trim(name)
 
               # Try "End <Name> <ID>" first (strict), then "End <Name>" as fallback
+              # Allow for multiple spaces between words (AI0Win style)
               end_tag_regex = ~r/^End\s+#{Regex.escape(header_name)}\s+#?#{Regex.escape(id)}\s*$/
               end_idx = find_end_index_regex(lines, i + 1, end_tag_regex)
 
@@ -416,7 +417,7 @@ defmodule Ai0Parser.Parser do
                  {parsed_body, _} = parse_lines(body, 0, %{})
 
                  parsed_body = Map.put(parsed_body, "ID", id)
-                 parsed_body = if internal_id, do: Map.put(parsed_body, "DBID", internal_id), else: parsed_body
+                 parsed_body = if internal_id, do: Map.put(parsed_body, "UsageTag", internal_id), else: parsed_body
 
                  # Special handling for Breakdown blocks in Concept Pool
                  parsed_body = if String.trim(header_name) == "Breakdown" do
@@ -467,7 +468,7 @@ defmodule Ai0Parser.Parser do
     body = Enum.slice(lines, i + 1, end_idx_implicit - (i + 1))
     {parsed_body, _} = parse_lines(body, 0, %{})
     parsed_body = Map.put(parsed_body, "ID", id)
-    parsed_body = if internal_id, do: Map.put(parsed_body, "DBID", internal_id), else: parsed_body
+    parsed_body = if internal_id, do: Map.put(parsed_body, "UsageTag", internal_id), else: parsed_body
 
     acc2 = put_block(acc, header_name, parsed_body)
 
@@ -655,7 +656,7 @@ defmodule Ai0Parser.Parser do
           end
 
           item = %{"ID" => id, "Name" => name}
-          item = if internal_id, do: Map.put(item, "DBID", internal_id), else: item
+          item = if internal_id, do: Map.put(item, "UsageTag", internal_id), else: item
 
           {updated_item, next_i} = parse_item_properties(lines, i + 1, item)
           do_parse_icom_items(lines, next_i, acc ++ [updated_item])
@@ -817,6 +818,7 @@ defmodule Ai0Parser.Parser do
     pools = if Map.has_key?(data, "Concept Pool"), do: Map.put(pools, "Concepts", Map.get(data, "Concept Pool")), else: pools
     pools = if Map.has_key?(data, "Costdriver Pool"), do: Map.put(pools, "Costdrivers", Map.get(data, "Costdriver Pool")), else: pools
     pools = if Map.has_key?(data, "Note Pool"), do: Map.put(pools, "Notes", Map.get(data, "Note Pool")), else: pools
+    pools = if Map.has_key?(data, "Property Pool"), do: Map.put(pools, "Properties", Map.get(data, "Property Pool")), else: pools
     pools
   end
 
